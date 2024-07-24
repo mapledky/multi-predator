@@ -256,19 +256,30 @@ def get_datasets(config):
 
 
 
-def get_dataloader(dataset, batch_size=1, num_workers=4, shuffle=True, neighborhood_limits=None):
+def get_dataloader(dataset, batch_size=1, num_workers=4, shuffle=True, neighborhood_limits=None, sampler=None):
     if neighborhood_limits is None:
         neighborhood_limits = calibrate_neighbors(dataset, dataset.config, collate_fn=collate_fn_descriptor)
     print("neighborhood:", neighborhood_limits)
-    dataloader = torch.utils.data.DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        num_workers=num_workers,
-        # https://discuss.pytorch.org/t/supplying-arguments-to-collate-fn/25754/4
-        collate_fn=partial(collate_fn_descriptor, config=dataset.config, neighborhood_limits=neighborhood_limits),
-        drop_last=False
-    )
+    if sampler ==None:
+        dataloader = torch.utils.data.DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            num_workers=num_workers,
+            # https://discuss.pytorch.org/t/supplying-arguments-to-collate-fn/25754/4
+            collate_fn=partial(collate_fn_descriptor, config=dataset.config, neighborhood_limits=neighborhood_limits),
+            drop_last=False
+        )
+    else:
+        dataloader = torch.utils.data.DataLoader(
+            dataset,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            # https://discuss.pytorch.org/t/supplying-arguments-to-collate-fn/25754/4
+            collate_fn=partial(collate_fn_descriptor, config=dataset.config, neighborhood_limits=neighborhood_limits),
+            drop_last=False,
+            sampler=sampler
+        )
     return dataloader, neighborhood_limits
 
 

@@ -4,10 +4,12 @@ import torch.nn as nn
 from tensorboardX import SummaryWriter
 from lib.timer import Timer, AverageMeter
 from lib.utils import Logger,validate_gradient
+from collections import OrderedDict
 
 from tqdm import tqdm
 import torch.nn.functional as F
 import gc
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 
 class Trainer(object):
@@ -22,6 +24,8 @@ class Trainer(object):
         self.max_points = args.max_points
 
         self.model = args.model.to(self.device)
+        if args.distributed:
+            self.model = DDP(self.model, device_ids=[int(args.local_rank)], output_device=int(args.local_rank))
         self.optimizer = args.optimizer
         self.scheduler = args.scheduler
         self.scheduler_freq = args.scheduler_freq
@@ -56,9 +60,12 @@ class Trainer(object):
         f.close()
  
     def _snapshot(self, epoch, name=None):
+        model_state_dict = self.model.state_dict()
+        if self.config.distributed:
+            model_state_dict = OrderedDict([(key[7:], value) for key, value in model_state_dict.items()])
         state = {
             'epoch': epoch,
-            'state_dict': self.model.state_dict(),
+            'state_dict': model_state_dict,
             'optimizer': self.optimizer.state_dict(),
             'scheduler': self.scheduler.state_dict(),
             'best_loss': self.best_loss,
@@ -74,7 +81,10 @@ class Trainer(object):
     def _load_pretrain(self, resume):
         if os.path.isfile(resume):
             state = torch.load(resume)
-            self.model.load_state_dict(state['state_dict'])
+            model_dict = state['state_dict']
+            if self.config.distributed:
+                model_dict = OrderedDict([('module.' + key, value) for key, value in model_dict.items()])
+            self.model.load_state_dict(model_dict)
             self.start_epoch = state['epoch']
             self.scheduler.load_state_dict(state['scheduler'])
             self.optimizer.load_state_dict(state['optimizer'])
@@ -170,14 +180,19 @@ class Trainer(object):
         # init stats meter
         stats_meter = self.stats_meter()
 
-        num_iter = int(len(self.loader[phase].dataset) // self.loader[phase].batch_size)
-        c_loader_iter = self.loader[phase].__iter__()
-        
+        if self.config.distributed:
+            print('epoch ', epoch)
+            self.loader[phase].sampler.set_epoch(epoch)
+        total_iterations = len(self.loader[phase])
+
+        # num_iter = int(len(self.loader[phase].dataset) // self.loader[phase].batch_size)
+        # c_loader_iter = self.loader[phase].__iter__()
+        print('iteration ',total_iterations)
         self.optimizer.zero_grad()
-        for c_iter in tqdm(range(num_iter)): # loop through this epoch   
+        for c_iter, data_iter  in enumerate(tqdm(self.loader[phase])): # loop through this epoch   
             ##################################
             # load inputs to device.
-            inputs = c_loader_iter.next()
+            inputs = data_iter
             for k, v in inputs.items():  
                 if type(v) == list:
                     inputs[k] = [item.to(self.device) for item in v]
@@ -211,11 +226,11 @@ class Trainer(object):
             torch.cuda.empty_cache()
             
             if (c_iter + 1) % self.verbose_freq == 0 and self.verbose:
-                curr_iter = num_iter * (epoch - 1) + c_iter
+                curr_iter = total_iterations * (epoch - 1) + c_iter
                 for key, value in stats_meter.items():
                     self.writer.add_scalar(f'{phase}/{key}', value.avg, curr_iter)
                 
-                message = f'{phase} Epoch: {epoch} [{c_iter+1:4d}/{num_iter}]'
+                message = f'{phase} Epoch: {epoch} [{c_iter+1:4d}/{total_iterations}]'
                 for key,value in stats_meter.items():
                     message += f'{key}: {value.avg:.2f}\t'
 

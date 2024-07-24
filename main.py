@@ -11,18 +11,26 @@ from configs.models import architectures
 
 from torch import optim
 from torch import nn
+
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 setup_seed(0)
 
 """
 python code/OverlapPredator/main.py code/OverlapPredator/configs/train/front.yaml
+python -m torch.distributed.launch --nproc_per_node 4 code/OverlapPredator/main.py code/OverlapPredator/configs/train/front.yaml
 """
 
 if __name__ == '__main__':
     # load configs
     parser = argparse.ArgumentParser()
     parser.add_argument('config', type=str, help= 'Path to the config file.')
+    parser.add_argument("--local_rank", default=0)
     args = parser.parse_args()
     config = load_config(args.config)
+    local_rank = args.local_rank
+    torch.cuda.set_device(f'cuda:{local_rank}')
+
     config['snapshot_dir'] = 'code/OverlapPredator/snapshot/%s' % config['exp_dir']
     config['tboard_dir'] = 'code/OverlapPredator/snapshot/%s/tensorboard' % config['exp_dir']
     config['save_dir'] = 'code/OverlapPredator/snapshot/%s/checkpoints' % config['exp_dir']
@@ -41,6 +49,11 @@ if __name__ == '__main__':
     else:
         config.device = torch.device('cpu')
     
+    if config.distributed:
+        dist.init_process_group(backend='nccl')
+        device = torch.device("cuda",  int(local_rank))
+        config.device = device
+        config.local_rank = local_rank
     # backup the files
     os.system(f'cp -r code/OverlapPredator/models {config.snapshot_dir}')
     os.system(f'cp -r code/OverlapPredator/datasets {config.snapshot_dir}')
@@ -76,17 +89,36 @@ if __name__ == '__main__':
     
     # create dataset and dataloader
     train_set, val_set, benchmark_set = get_datasets(config)
-    config.train_loader, neighborhood_limits = get_dataloader(dataset=train_set,
-                                        batch_size=config.batch_size,
-                                        shuffle=True,
-                                        num_workers=config.num_workers,
-                                        )
-    config.val_loader, _ = get_dataloader(dataset=val_set,
-                                        batch_size=config.batch_size,
-                                        shuffle=False,
-                                        num_workers=1,
-                                        neighborhood_limits=neighborhood_limits
-                                        )
+    if config.distributed:
+        train_sampler = torch.utils.data.distributed.DistributedSampler(train_set)
+        val_sampler = torch.utils.data.distributed.DistributedSampler(val_set)
+    else:
+        train_sampler = None
+        val_sampler = None
+    if config.distributed:
+        config.train_loader, neighborhood_limits = get_dataloader(dataset=train_set,
+                                            batch_size=config.batch_size,
+                                            num_workers=config.num_workers,
+                                            sampler=train_sampler
+                                            )
+        config.val_loader, _ = get_dataloader(dataset=val_set,
+                                            batch_size=config.batch_size,
+                                            num_workers=1,
+                                            neighborhood_limits=neighborhood_limits,
+                                            sampler=val_sampler
+                                            )
+    else:
+        config.train_loader, neighborhood_limits = get_dataloader(dataset=train_set,
+                                            batch_size=config.batch_size,
+                                            shuffle=True,
+                                            num_workers=config.num_workers,
+                                            )
+        config.val_loader, _ = get_dataloader(dataset=val_set,
+                                            batch_size=config.batch_size,
+                                            shuffle=False,
+                                            num_workers=1,
+                                            neighborhood_limits=neighborhood_limits,
+                                            )
     config.test_loader, _ = get_dataloader(dataset=benchmark_set,
                                         batch_size=config.batch_size,
                                         shuffle=False,

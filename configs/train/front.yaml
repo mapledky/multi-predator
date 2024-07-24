@@ -6,6 +6,7 @@ misc:
   verbose_freq: 1000
   snapshot_freq: 1
   pretrain: ''
+  distributed: True
 
 
 model:
